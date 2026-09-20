@@ -161,6 +161,7 @@ static bool s_last_slc = false;
 static bool s_last_audio = false;
 static uint8_t s_last_signal = 0xFF;
 static uint8_t s_last_battery = 0xFF;
+static uint8_t s_last_codec = 0;
 static char s_last_caller[32] = "";
 static char s_last_device_name[64] = "";
 
@@ -174,6 +175,7 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         status->is_audio_connected != s_last_audio ||
         status->signal_strength != s_last_signal ||
         status->battery_level != s_last_battery ||
+        status->negotiated_codec != s_last_codec ||
         strncmp(status->caller_id, s_last_caller, sizeof(s_last_caller)) != 0 ||
         strncmp(status->device_name, s_last_device_name, sizeof(s_last_device_name)) != 0;
     if (!changed) return;
@@ -182,6 +184,7 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
     s_last_audio = status->is_audio_connected;
     s_last_signal = status->signal_strength;
     s_last_battery = status->battery_level;
+    s_last_codec = status->negotiated_codec;
     snprintf(s_last_caller, sizeof(s_last_caller), "%s", status->caller_id);
     snprintf(s_last_device_name, sizeof(s_last_device_name), "%s", status->device_name);
 
@@ -192,6 +195,8 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
 
     const char *conn = conn_state_name(status);
     const char *callStatus = call_status_name(status);
+    const char *codecStr = (status->negotiated_codec == HFP_CODEC_MSBC) ? "mSBC" :
+                           ((status->negotiated_codec == HFP_CODEC_CVSD || status->is_audio_connected) ? "CVSD" : "");
 
     // Build the optional calls[] array.
     char calls[320] = "[]";
@@ -214,6 +219,7 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         "\"signalBars\":%u,"
         "\"batteryLevel\":%u,"
         "\"scoActive\":%s,"
+        "\"codec\":\"%s\","
         "\"calls\":%s}",
         conn,
         addr,
@@ -221,6 +227,7 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         (unsigned)status->signal_strength,
         (unsigned)status->battery_level,
         status->is_audio_connected ? "true" : "false",
+        codecStr,
         calls);
     emit_line(buf);
 }
@@ -268,11 +275,16 @@ void ipc_on_recording_started(const char *session_dir, const char *stereo_wav,
     json_escape(rx, erx, sizeof(erx));
     json_escape(tx, etx, sizeof(etx));
 
+    hfp_hf_status_t status;
+    bt_hfp_get_status(&status);
+    char num[64];
+    json_escape(status.caller_id, num, sizeof(num));
+
     char buf[3200];
     snprintf(buf, sizeof(buf),
         "{\"type\":\"call-started\",\"sessionDir\":\"%s\",\"fullPath\":\"%s\","
-        "\"inPath\":\"%s\",\"outPath\":\"%s\",\"isOutgoing\":%s}",
-        esd, esw, erx, etx, s_next_call_outgoing ? "true" : "false");
+        "\"inPath\":\"%s\",\"outPath\":\"%s\",\"isOutgoing\":%s,\"number\":\"%s\"}",
+        esd, esw, erx, etx, s_next_call_outgoing ? "true" : "false", num);
     emit_line(buf);
 }
 
