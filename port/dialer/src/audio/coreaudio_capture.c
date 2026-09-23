@@ -15,7 +15,7 @@ static AudioQueueRef s_audio_queue = NULL;
 static AudioQueueBufferRef s_buffers[BUFFER_COUNT];
 static bool s_is_running = false;
 static volatile uint32_t s_target_sample_rate = 8000;
-static float s_mic_gain = 2.5f; // Default digital gain boost (2.5x)
+static float s_mic_gain = 1.0f; // Unity gain – no synthetic amplification
 static audio_capture_pcm_callback_t s_capture_cb = NULL;
 
 static float s_resample_phase = 0.0f;
@@ -94,6 +94,18 @@ int audio_capture_init(audio_capture_pcm_callback_t pcm_callback) {
         return -1;
     }
 
+    // Pin the input queue to the built-in microphone so that earphone/headset
+    // audio devices are never used as the capture source. This prevents the
+    // earphone driver bleed (the remote party's audio leaking through the
+    // earphone cup to the headset mic) from being captured and echo'd back.
+    // kAudioDeviceBuiltInMicrophoneUID is a macOS constant for the built-in mic.
+    CFStringRef builtInMicUID = CFSTR("BuiltInMicrophoneDevice");
+    AudioQueueSetProperty(s_audio_queue,
+                          kAudioQueueProperty_CurrentDevice,
+                          &builtInMicUID,
+                          sizeof(builtInMicUID));
+    diag_log("[COREAUDIO_CAPTURE] Pinned input to built-in microphone (suppressing headset/earphone mic)");
+
     uint32_t buffer_byte_size = BUFFER_FRAMES * format.mBytesPerFrame;
     for (int i = 0; i < BUFFER_COUNT; i++) {
         status = AudioQueueAllocateBuffer(s_audio_queue, buffer_byte_size, &s_buffers[i]);
@@ -112,6 +124,17 @@ int audio_capture_start(void) {
     if (!s_audio_queue) return -1;
     if (s_is_running) return 0;
 
+    s_resample_phase = 0.0f;
+    s_mono_accum = 0.0f;
+    s_accum_count = 0;
+
+    // In CoreAudio, an input AudioQueue requires empty buffers to be enqueued
+    // so it has space to fill incoming audio samples. AudioQueueStop clears all
+    // buffers from the queue, so we must re-enqueue our buffer pool on each start.
+    for (int i = 0; i < BUFFER_COUNT; i++) {
+        AudioQueueEnqueueBuffer(s_audio_queue, s_buffers[i], 0, NULL);
+    }
+
     s_is_running = true;
     OSStatus status = AudioQueueStart(s_audio_queue, NULL);
     if (status != noErr) {
@@ -119,7 +142,7 @@ int audio_capture_start(void) {
         s_is_running = false;
         return -1;
     }
-    diag_log("[COREAUDIO_CAPTURE] Microphone capture started");
+    diag_log("[COREAUDIO_CAPTURE] Microphone capture started (buffers enqueued: %d)", BUFFER_COUNT);
     return 0;
 }
 
@@ -127,7 +150,8 @@ void audio_capture_stop(void) {
     if (!s_audio_queue || !s_is_running) return;
 
     s_is_running = false;
-    AudioQueueStop(s_audio_queue, false);
+    AudioQueueStop(s_audio_queue, true);
+    AudioQueueReset(s_audio_queue);
     diag_log("[COREAUDIO_CAPTURE] Microphone capture stopped");
 }
 

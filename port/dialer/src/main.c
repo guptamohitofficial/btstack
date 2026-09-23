@@ -172,9 +172,9 @@ static void on_hfp_status_changed(const hfp_hf_status_t *status) {
             audio_render_set_volume(1.2f);
         }
         if (status->mic_gain > 0) {
-            audio_capture_set_gain((float)status->mic_gain / 15.0f * 3.0f);
+            audio_capture_set_gain((float)status->mic_gain / 15.0f);
         } else {
-            audio_capture_set_gain(2.5f);
+            audio_capture_set_gain(1.0f); // Unity gain — no synthetic amplification
         }
         diag_log("[AUDIO] Starting audio rendering & capture engines (Codec: %s, Vol: %.1fx, Gain: %.1fx)...",
                  status->negotiated_codec == HFP_CODEC_MSBC ? "mSBC (16kHz)" : "CVSD (8kHz)",

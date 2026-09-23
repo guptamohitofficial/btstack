@@ -49,8 +49,8 @@ static void update_call_state_from_indicators(void) {
     } else {
         // No active call and no call setup in progress
         s_status.call_state = s_status.is_slc_connected ? HFP_STATE_SLC_CONNECTED : HFP_STATE_IDLE;
-        s_status.caller_id[0] = '\0';
-        s_status.caller_name[0] = '\0';
+        // Do not wipe caller_id/name here; that is handled by HFP_SUBEVENT_CALL_TERMINATED
+        // to prevent wiping numbers during brief CIEV indicator packet arrival gaps.
     }
 }
 
@@ -125,6 +125,9 @@ static void hfp_hf_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
                 sco_audio_set_codec(s_status.negotiated_codec);
                 printf("\n[HFP_HF] >>> AUDIO CONNECTION ESTABLISHED (Codec: %s) <<<\n",
                        s_status.negotiated_codec == HFP_CODEC_MSBC ? "mSBC (Wideband 16kHz)" : "CVSD (8kHz)");
+                if (s_status.caller_id[0] == '\0' && s_status.acl_handle != HCI_CON_HANDLE_INVALID) {
+                    hfp_hf_query_current_call_status(s_status.acl_handle);
+                }
             } else {
                 printf("[HFP_HF] Audio Connection FAILED (Status: 0x%02x)\n", status);
                 s_status.is_audio_connected = false;
@@ -136,6 +139,7 @@ static void hfp_hf_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
         case HFP_SUBEVENT_AUDIO_CONNECTION_RELEASED: {
             printf("\n[HFP_HF] >>> AUDIO CONNECTION RELEASED <<<\n");
             s_status.is_audio_connected = false;
+            sco_audio_on_audio_released();
             if (s_call_indicator == 0 && s_callsetup_indicator == 0) {
                 s_status.call_state = s_status.is_slc_connected ? HFP_STATE_SLC_CONNECTED : HFP_STATE_IDLE;
                 s_status.caller_id[0] = '\0';
@@ -195,6 +199,9 @@ static void hfp_hf_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
             s_call_indicator = 1;
             s_callsetup_indicator = 0;
             s_status.call_state = HFP_STATE_ACTIVE_CALL;
+            if (s_status.caller_id[0] == '\0' && s_status.acl_handle != HCI_CON_HANDLE_INVALID) {
+                hfp_hf_query_current_call_status(s_status.acl_handle);
+            }
             notify_status_change();
             break;
         }
@@ -207,6 +214,34 @@ static void hfp_hf_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
             s_status.caller_id[0] = '\0';
             s_status.caller_name[0] = '\0';
             notify_status_change();
+            break;
+        }
+
+        case HFP_SUBEVENT_ENHANCED_CALL_STATUS: {
+            const char *number = hfp_subevent_enhanced_call_status_get_bnip_number(packet);
+            uint8_t dir = hfp_subevent_enhanced_call_status_get_clcc_dir(packet);
+            uint8_t clcc_status = hfp_subevent_enhanced_call_status_get_clcc_status(packet);
+            printf("[HFP_HF] Enhanced Call Status (+CLCC): dir=%u (%s), status=%u, number=%s\n",
+                   dir, dir == 0 ? "outgoing" : "incoming", clcc_status, number ? number : "<none>");
+            if (number && strlen(number) > 0) {
+                while (*number == ' ' || *number == '"' || *number == '\'') number++;
+                char clean_num[64];
+                snprintf(clean_num, sizeof(clean_num), "%s", number);
+                char *end = clean_num + strlen(clean_num) - 1;
+                while (end >= clean_num && (*end == ' ' || *end == '"' || *end == '\'')) {
+                    *end = '\0';
+                    end--;
+                }
+                if (clean_num[0] != '\0') {
+                    strncpy(s_status.caller_id, clean_num, sizeof(s_status.caller_id) - 1);
+                    s_status.caller_id[sizeof(s_status.caller_id) - 1] = '\0';
+                    if (dir == 0 && (s_status.call_state == HFP_STATE_SLC_CONNECTED || s_status.call_state == HFP_STATE_IDLE)) {
+                        s_status.call_state = (clcc_status == 0) ? HFP_STATE_ACTIVE_CALL : HFP_STATE_OUTGOING_CALL;
+                    }
+                    printf("[HFP_HF] Phone number registered via CLCC: %s (State: %d)\n", s_status.caller_id, s_status.call_state);
+                    notify_status_change();
+                }
+            }
             break;
         }
 
@@ -242,10 +277,16 @@ static void hfp_hf_packet_handler(uint8_t packet_type, uint16_t channel, uint8_t
                     s_call_indicator = value;
                     update_call_state_from_indicators();
                     printf("[HFP_HF] AG Indicator 'call' = %u (New state: %d)\n", value, s_status.call_state);
+                    if (value == 1 && s_status.caller_id[0] == '\0' && s_status.acl_handle != HCI_CON_HANDLE_INVALID) {
+                        hfp_hf_query_current_call_status(s_status.acl_handle);
+                    }
                 } else if (strcmp(name, "callsetup") == 0) {
                     s_callsetup_indicator = value;
                     update_call_state_from_indicators();
                     printf("[HFP_HF] AG Indicator 'callsetup' = %u (New state: %d)\n", value, s_status.call_state);
+                    if (value > 0 && s_status.caller_id[0] == '\0' && s_status.acl_handle != HCI_CON_HANDLE_INVALID) {
+                        hfp_hf_query_current_call_status(s_status.acl_handle);
+                    }
                 } else if (strcmp(name, "service") == 0) {
                     s_status.service_status = value;
                 } else if (strcmp(name, "signal") == 0) {
@@ -376,8 +417,19 @@ void bt_hfp_set_device_name(const char *name) {
 }
 
 int bt_hfp_disconnect(void) {
-    if (s_status.acl_handle == HCI_CON_HANDLE_INVALID) return -1;
-    return hfp_hf_release_service_level_connection(s_status.acl_handle);
+    if (s_status.acl_handle != HCI_CON_HANDLE_INVALID) {
+        hfp_hf_release_service_level_connection(s_status.acl_handle);
+        gap_disconnect(s_status.acl_handle);
+    }
+    sco_audio_on_audio_released();
+    s_status.is_slc_connected = false;
+    s_status.is_audio_connected = false;
+    s_status.acl_handle = HCI_CON_HANDLE_INVALID;
+    s_status.call_state = HFP_STATE_IDLE;
+    s_status.caller_id[0] = '\0';
+    s_status.caller_name[0] = '\0';
+    notify_status_change();
+    return 0;
 }
 
 int bt_hfp_dial(const char *number) {
