@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "diag_logger.h"
 #include "bt/bt_controller.h"
@@ -433,13 +434,26 @@ int main(int argc, const char * argv[]) {
     }
 
     // 3. Initialize Controller, USB HCI Transport & Core Protocols (L2CAP, RFCOMM, SDP)
+    char adapter_name[128];
+    if (ipc_device_name()) {
+        snprintf(adapter_name, sizeof(adapter_name), "%s", ipc_device_name());
+    } else {
+        int dev_num = ipc_device_number();
+        if (dev_num <= 0) {
+            // Assign a random 3-digit number (100-999) if not yet assigned to user
+            srand((unsigned int)time(NULL));
+            dev_num = 100 + (rand() % 900);
+            diag_log("[DIALER] No user device number found. Using random 3-digit fallback: %d", dev_num);
+        }
+
 #ifdef _WIN32
-    const char *adapter_name = "Windows Dialer (UB500)";
+        snprintf(adapter_name, sizeof(adapter_name), "PC Dialer %d", dev_num);
 #elif defined(__APPLE__)
-    const char *adapter_name = "Mac Dialer (UB500)";
+        snprintf(adapter_name, sizeof(adapter_name), "Mac Dialer %d", dev_num);
 #else
-    const char *adapter_name = "Dialer (UB500)";
+        snprintf(adapter_name, sizeof(adapter_name), "Dialer %d", dev_num);
 #endif
+    }
     bt_controller_set_status_callback(&on_adapter_status);
     if (bt_controller_init(adapter_name, &on_controller_ready) != 0) {
         diag_log("[ERROR] Failed to initialize BT controller");

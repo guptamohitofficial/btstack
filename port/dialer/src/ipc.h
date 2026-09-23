@@ -30,6 +30,12 @@ bool ipc_is_enabled(void);
 /** The value passed to --recordings-dir, or NULL. */
 const char *ipc_recordings_dir(void);
 
+/** The value passed to --device-name, or NULL. */
+const char *ipc_device_name(void);
+
+/** The value passed to --device-number, or -1 if not set. */
+int ipc_device_number(void);
+
 /** Install the diag_logger sink so engine logs are forwarded as JSON log events
  *  and raw stdout text is suppressed (stdout carries JSON only). */
 void ipc_install_log_sink(void);

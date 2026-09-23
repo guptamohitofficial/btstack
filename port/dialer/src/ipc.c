@@ -14,6 +14,8 @@
 // ---------------------------------------------------------------------------
 static bool s_ipc_enabled = false;
 static char s_recordings_dir[512] = "";
+static char s_device_name[128] = "";
+static int s_device_number = -1;
 static bool s_next_call_outgoing = false;
 
 bool ipc_parse_args(int argc, const char *argv[]) {
@@ -22,6 +24,10 @@ bool ipc_parse_args(int argc, const char *argv[]) {
             s_ipc_enabled = true;
         } else if (strcmp(argv[i], "--recordings-dir") == 0 && i + 1 < argc) {
             snprintf(s_recordings_dir, sizeof(s_recordings_dir), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--device-name") == 0 && i + 1 < argc) {
+            snprintf(s_device_name, sizeof(s_device_name), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--device-number") == 0 && i + 1 < argc) {
+            s_device_number = atoi(argv[++i]);
         }
     }
     return s_ipc_enabled;
@@ -29,6 +35,8 @@ bool ipc_parse_args(int argc, const char *argv[]) {
 
 bool ipc_is_enabled(void) { return s_ipc_enabled; }
 const char *ipc_recordings_dir(void) { return s_recordings_dir[0] ? s_recordings_dir : NULL; }
+const char *ipc_device_name(void) { return s_device_name[0] ? s_device_name : NULL; }
+int ipc_device_number(void) { return s_device_number; }
 void ipc_set_call_outgoing(bool outgoing) { s_next_call_outgoing = outgoing; }
 
 // ---------------------------------------------------------------------------
