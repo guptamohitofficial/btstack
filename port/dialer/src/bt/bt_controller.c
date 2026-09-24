@@ -671,9 +671,9 @@ int bt_controller_init(const char *device_name, bt_controller_ready_callback_t o
 }
 
 int bt_controller_init_target(const char *device_name, uint16_t vid, uint16_t pid, uint8_t bus, int path_len, const uint8_t *ports, bt_controller_ready_callback_t on_ready_cb) {
-    // The advertised Bluetooth name is intentionally fixed per-platform (see
-    // s_device_name) and does not follow the caller-supplied device_name.
-    UNUSED(device_name);
+    if (device_name != NULL && strlen(device_name) > 0) {
+        snprintf(s_device_name, sizeof(s_device_name), "%s", device_name);
+    }
     s_ready_callback = on_ready_cb;
 
     uint16_t detected_vid = vid, detected_pid = pid;
