@@ -16,6 +16,8 @@ static bool s_ipc_enabled = false;
 static char s_recordings_dir[512] = "";
 static char s_device_name[128] = "";
 static int s_device_number = -1;
+static uint16_t s_target_vid = 0;
+static uint16_t s_target_pid = 0;
 static bool s_next_call_outgoing = false;
 
 bool ipc_parse_args(int argc, const char *argv[]) {
@@ -28,6 +30,10 @@ bool ipc_parse_args(int argc, const char *argv[]) {
             snprintf(s_device_name, sizeof(s_device_name), "%s", argv[++i]);
         } else if (strcmp(argv[i], "--device-number") == 0 && i + 1 < argc) {
             s_device_number = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--vid") == 0 && i + 1 < argc) {
+            s_target_vid = (uint16_t)strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
+            s_target_pid = (uint16_t)strtoul(argv[++i], NULL, 0);
         }
     }
     return s_ipc_enabled;
@@ -37,6 +43,8 @@ bool ipc_is_enabled(void) { return s_ipc_enabled; }
 const char *ipc_recordings_dir(void) { return s_recordings_dir[0] ? s_recordings_dir : NULL; }
 const char *ipc_device_name(void) { return s_device_name[0] ? s_device_name : NULL; }
 int ipc_device_number(void) { return s_device_number; }
+uint16_t ipc_target_vid(void) { return s_target_vid; }
+uint16_t ipc_target_pid(void) { return s_target_pid; }
 void ipc_set_call_outgoing(bool outgoing) { s_next_call_outgoing = outgoing; }
 
 // ---------------------------------------------------------------------------

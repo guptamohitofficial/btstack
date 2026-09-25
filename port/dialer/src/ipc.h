@@ -36,6 +36,12 @@ const char *ipc_device_name(void);
 /** The value passed to --device-number, or -1 if not set. */
 int ipc_device_number(void);
 
+/** The target USB vendor ID passed to --vid, or 0. */
+uint16_t ipc_target_vid(void);
+
+/** The target USB product ID passed to --pid, or 0. */
+uint16_t ipc_target_pid(void);
+
 /** Install the diag_logger sink so engine logs are forwarded as JSON log events
  *  and raw stdout text is suppressed (stdout carries JSON only). */
 void ipc_install_log_sink(void);

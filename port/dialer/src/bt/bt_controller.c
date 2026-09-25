@@ -483,9 +483,14 @@ static bool probe_usb_bluetooth_dongle(uint16_t *out_vid, uint16_t *out_pid, cha
 
             if (vid_pos && pid_pos) {
                 if (sscanf(vid_pos + 4, "%x", &path_vid) == 1 && sscanf(pid_pos + 4, "%x", &path_pid) == 1) {
-                    *out_vid = (uint16_t)path_vid;
-                    *out_pid = (uint16_t)path_pid;
-                    found = true;
+                    uint16_t v = (uint16_t)path_vid;
+                    // Only accept known Bluetooth controller VIDs (TP-Link 0x2357, Realtek 0x0BDA, CSR 0x0A12, Broadcom 0x0A5C, Intel 0x8087, Microsoft 0x045E).
+                    // Skip non-Bluetooth USB devices like Logitech (0x046D) USB receivers/mice/webcams.
+                    if (v == 0x2357 || v == 0x0bda || v == 0x0a12 || v == 0x0a5c || v == 0x8087 || v == 0x045e) {
+                        *out_vid = v;
+                        *out_pid = (uint16_t)path_pid;
+                        found = true;
+                    }
                 }
             }
 
@@ -501,9 +506,12 @@ static bool probe_usb_bluetooth_dongle(uint16_t *out_vid, uint16_t *out_pid, cha
                         ULONG bytesRead = 0;
                         if (WinUsb_GetDescriptor(winusbHandle, USB_DEVICE_DESCRIPTOR_TYPE, 0, 0,
                                                  (PUCHAR)&devDesc, sizeof(devDesc), &bytesRead) && bytesRead == sizeof(devDesc)) {
-                            *out_vid = devDesc.idVendor;
-                            *out_pid = devDesc.idProduct;
-                            found = true;
+                            uint16_t v = devDesc.idVendor;
+                            if (v == 0x2357 || v == 0x0bda || v == 0x0a12 || v == 0x0a5c || v == 0x8087 || v == 0x045e) {
+                                *out_vid = devDesc.idVendor;
+                                *out_pid = devDesc.idProduct;
+                                found = true;
+                            }
                         }
                         WinUsb_Free(winusbHandle);
                     }

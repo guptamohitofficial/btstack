@@ -455,7 +455,9 @@ int main(int argc, const char * argv[]) {
 #endif
     }
     bt_controller_set_status_callback(&on_adapter_status);
-    if (bt_controller_init(adapter_name, &on_controller_ready) != 0) {
+    uint16_t target_vid = ipc_target_vid();
+    uint16_t target_pid = ipc_target_pid();
+    if (bt_controller_init_target(adapter_name, target_vid, target_pid, 0, 0, NULL, &on_controller_ready) != 0) {
         diag_log("[ERROR] Failed to initialize BT controller");
         diag_logger_close();
         return 1;
