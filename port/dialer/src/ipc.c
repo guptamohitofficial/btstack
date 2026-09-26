@@ -3,6 +3,7 @@
 #include "ipc.h"
 #include "bt/hfp_hf.h"
 #include "bt/bt_controller.h"
+#include "audio/audio_capture.h"
 #include "diag_logger.h"
 
 #include <stdio.h>
@@ -94,6 +95,29 @@ static bool json_get_string(const char *json, const char *key, char *out, size_t
     }
     out[o] = '\0';
     return true;
+}
+
+static bool json_get_bool(const char *json, const char *key, bool *out_val) {
+    if (!json || !key || !out_val) return false;
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ':') return false;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (strncmp(p, "true", 4) == 0 || strncmp(p, "\"true\"", 6) == 0 || *p == '1') {
+        *out_val = true;
+        return true;
+    }
+    if (strncmp(p, "false", 5) == 0 || strncmp(p, "\"false\"", 7) == 0 || *p == '0') {
+        *out_val = false;
+        return true;
+    }
+    return false;
 }
 
 // Escape a string into a JSON-safe buffer (for emission).
@@ -236,7 +260,8 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         "\"batteryLevel\":%u,"
         "\"scoActive\":%s,"
         "\"codec\":\"%s\","
-        "\"calls\":%s}",
+        "\"calls\":%s,"
+        "\"usbDonglePresent\":%s}",
         conn,
         addr,
         dname,
@@ -244,7 +269,8 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         (unsigned)status->battery_level,
         status->is_audio_connected ? "true" : "false",
         codecStr,
-        calls);
+        calls,
+        bt_controller_is_dongle_present() ? "true" : "false");
     emit_line(buf);
 }
 
@@ -400,6 +426,15 @@ void ipc_handle_stdin_line(const char *line) {
         if (json_get_string(p, "digit", digit, sizeof(digit)) && digit[0]) {
             diag_log("[IPC] dtmf %c", digit[0]);
             bt_hfp_send_dtmf(digit[0]);
+        }
+    } else if (strcmp(cmd, "mute") == 0) {
+        bool muted = false;
+        if (json_get_bool(p, "muted", &muted)) {
+            diag_log("[IPC] mute -> %s", muted ? "MUTED" : "UNMUTED");
+            audio_capture_set_gain(muted ? 0.0f : 1.0f);
+        } else {
+            diag_log("[IPC] mute (0.0f gain)");
+            audio_capture_set_gain(0.0f);
         }
     } else if (strcmp(cmd, "discover") == 0 || strcmp(cmd, "discover-nearby") == 0) {
         diag_log("[IPC] discover");

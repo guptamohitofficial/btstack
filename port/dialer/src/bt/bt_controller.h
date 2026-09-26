@@ -55,6 +55,11 @@ void bt_controller_set_status_callback(bt_controller_status_callback_t on_status
 int bt_controller_start(void);
 
 /**
+ * @brief Check if a USB Bluetooth dongle was detected during probing/init.
+ */
+bool bt_controller_is_dongle_present(void);
+
+/**
  * @brief Start the BTstack main loop (blocking).
  */
 void bt_controller_run(void);
