@@ -939,6 +939,10 @@ bool bt_controller_is_ready(void) {
     return s_is_ready;
 }
 
+bool bt_controller_is_dongle_present(void) {
+    return s_dongle_detected;
+}
+
 void bt_controller_get_bd_addr(bd_addr_t out_addr) {
     memcpy(out_addr, s_local_bd_addr, sizeof(bd_addr_t));
 }
