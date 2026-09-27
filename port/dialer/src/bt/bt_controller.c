@@ -13,6 +13,7 @@
 #include <ctype.h>
 #include "btstack_tlv_windows.h"
 #include "btstack_run_loop_windows.h"
+#include "hci_transport_usb.h"
 static btstack_tlv_windows_t s_tlv_context;
 #else
 #include <unistd.h>
@@ -473,36 +474,63 @@ static bool probe_usb_bluetooth_dongle(uint16_t *out_vid, uint16_t *out_pid, cha
         if (!detail) continue;
         detail->cbSize = sizeof(SP_DEVICE_INTERFACE_DETAIL_DATA);
         if (SetupDiGetDeviceInterfaceDetail(hDevInfo, &devIntfData, detail, reqSize, NULL, NULL)) {
-            // Test opening with WinUSB
-            HANDLE hDev = CreateFile(detail->DevicePath, GENERIC_WRITE | GENERIC_READ,
-                                     FILE_SHARE_WRITE | FILE_SHARE_READ, NULL, OPEN_EXISTING,
-                                     FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
-            if (hDev != INVALID_HANDLE_VALUE) {
-                WINUSB_INTERFACE_HANDLE winusbHandle;
-                if (WinUsb_Initialize(hDev, &winusbHandle)) {
-                    USB_DEVICE_DESCRIPTOR devDesc;
-                    ULONG bytesRead = 0;
-                    if (WinUsb_GetDescriptor(winusbHandle, USB_DEVICE_DESCRIPTOR_TYPE, 0, 0,
-                                             (PUCHAR)&devDesc, sizeof(devDesc), &bytesRead) && bytesRead == sizeof(devDesc)) {
-                        *out_vid = devDesc.idVendor;
-                        *out_pid = devDesc.idProduct;
-                        if (out_name) {
-                            if (devDesc.idVendor == 0x2357 && devDesc.idProduct == 0x0604) snprintf(out_name, out_name_len, "TP-Link UB500 (RTL8761BU)");
-                            else if (devDesc.idVendor == 0x0bda) snprintf(out_name, out_name_len, "Realtek Bluetooth Adapter (0x%04X:0x%04X)", devDesc.idVendor, devDesc.idProduct);
-                            else if (devDesc.idVendor == 0x0a12) snprintf(out_name, out_name_len, "CSR Cambridge Silicon Radio (0x%04X:0x%04X)", devDesc.idVendor, devDesc.idProduct);
-                            else if (devDesc.idVendor == 0x0a5c) snprintf(out_name, out_name_len, "Broadcom Bluetooth Adapter (0x%04X:0x%04X)", devDesc.idVendor, devDesc.idProduct);
-                            else if (devDesc.idVendor == 0x8087) snprintf(out_name, out_name_len, "Intel Wireless Bluetooth (0x%04X:0x%04X)", devDesc.idVendor, devDesc.idProduct);
-                            else snprintf(out_name, out_name_len, "USB Bluetooth Adapter (0x%04X:0x%04X)", devDesc.idVendor, devDesc.idProduct);
-                        }
+            // 1. Direct device path string parsing for VID/PID (fast, no file lock)
+            uint32_t path_vid = 0, path_pid = 0;
+            const char *vid_pos = strstr(detail->DevicePath, "vid_");
+            if (!vid_pos) vid_pos = strstr(detail->DevicePath, "VID_");
+            const char *pid_pos = strstr(detail->DevicePath, "pid_");
+            if (!pid_pos) pid_pos = strstr(detail->DevicePath, "PID_");
+
+            if (vid_pos && pid_pos) {
+                if (sscanf(vid_pos + 4, "%x", &path_vid) == 1 && sscanf(pid_pos + 4, "%x", &path_pid) == 1) {
+                    uint16_t v = (uint16_t)path_vid;
+                    // Only accept known Bluetooth controller VIDs (TP-Link 0x2357, Realtek 0x0BDA, CSR 0x0A12, Broadcom 0x0A5C, Intel 0x8087, Microsoft 0x045E).
+                    // Skip non-Bluetooth USB devices like Logitech (0x046D) USB receivers/mice/webcams.
+                    if (v == 0x2357 || v == 0x0bda || v == 0x0a12 || v == 0x0a5c || v == 0x8087 || v == 0x045e) {
+                        *out_vid = v;
+                        *out_pid = (uint16_t)path_pid;
                         found = true;
-                        WinUsb_Free(winusbHandle);
-                        CloseHandle(hDev);
-                        free(detail);
-                        break;
                     }
-                    WinUsb_Free(winusbHandle);
                 }
-                CloseHandle(hDev);
+            }
+
+            // 2. Fallback to WinUSB descriptor query
+            if (!found) {
+                HANDLE hDev = CreateFile(detail->DevicePath, GENERIC_WRITE | GENERIC_READ,
+                                         FILE_SHARE_WRITE | FILE_SHARE_READ, NULL, OPEN_EXISTING,
+                                         FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED, NULL);
+                if (hDev != INVALID_HANDLE_VALUE) {
+                    WINUSB_INTERFACE_HANDLE winusbHandle;
+                    if (WinUsb_Initialize(hDev, &winusbHandle)) {
+                        USB_DEVICE_DESCRIPTOR devDesc;
+                        ULONG bytesRead = 0;
+                        if (WinUsb_GetDescriptor(winusbHandle, USB_DEVICE_DESCRIPTOR_TYPE, 0, 0,
+                                                 (PUCHAR)&devDesc, sizeof(devDesc), &bytesRead) && bytesRead == sizeof(devDesc)) {
+                            uint16_t v = devDesc.idVendor;
+                            if (v == 0x2357 || v == 0x0bda || v == 0x0a12 || v == 0x0a5c || v == 0x8087 || v == 0x045e) {
+                                *out_vid = devDesc.idVendor;
+                                *out_pid = devDesc.idProduct;
+                                found = true;
+                            }
+                        }
+                        WinUsb_Free(winusbHandle);
+                    }
+                    CloseHandle(hDev);
+                }
+            }
+
+            if (found) {
+                if (out_name) {
+                    if (*out_vid == 0x2357 && *out_pid == 0x0604) snprintf(out_name, out_name_len, "TP-Link UB500 (RTL8761BU)");
+                    else if (*out_vid == 0x0bda && (*out_pid == 0xa728 || *out_pid == 0x876f)) snprintf(out_name, out_name_len, "Realtek Bluetooth 5.4 Adapter (0x%04X:0x%04X)", *out_vid, *out_pid);
+                    else if (*out_vid == 0x0bda) snprintf(out_name, out_name_len, "Realtek Bluetooth Adapter (0x%04X:0x%04X)", *out_vid, *out_pid);
+                    else if (*out_vid == 0x0a12) snprintf(out_name, out_name_len, "CSR Cambridge Silicon Radio (0x%04X:0x%04X)", *out_vid, *out_pid);
+                    else if (*out_vid == 0x0a5c) snprintf(out_name, out_name_len, "Broadcom Bluetooth Adapter (0x%04X:0x%04X)", *out_vid, *out_pid);
+                    else if (*out_vid == 0x8087) snprintf(out_name, out_name_len, "Intel Wireless Bluetooth (0x%04X:0x%04X)", *out_vid, *out_pid);
+                    else snprintf(out_name, out_name_len, "USB Bluetooth Adapter (0x%04X:0x%04X)", *out_vid, *out_pid);
+                }
+                free(detail);
+                break;
             }
         }
         free(detail);
@@ -651,12 +679,22 @@ int bt_controller_init(const char *device_name, bt_controller_ready_callback_t o
 }
 
 int bt_controller_init_target(const char *device_name, uint16_t vid, uint16_t pid, uint8_t bus, int path_len, const uint8_t *ports, bt_controller_ready_callback_t on_ready_cb) {
-    // The advertised Bluetooth name is intentionally fixed per-platform (see
-    // s_device_name) and does not follow the caller-supplied device_name.
-    UNUSED(device_name);
+    if (device_name != NULL && strlen(device_name) > 0) {
+        snprintf(s_device_name, sizeof(s_device_name), "%s", device_name);
+    }
     s_ready_callback = on_ready_cb;
 
     uint16_t detected_vid = vid, detected_pid = pid;
+
+    // Register USB VID/PID combinations for transport whitelist
+    hci_transport_usb_add_device(0x2357, 0x0604); // TP-Link UB500 (Realtek RTL8761BU)
+    hci_transport_usb_add_device(0x0bda, 0xa728); // Realtek Bluetooth 5.4 Adapter
+    hci_transport_usb_add_device(0x0bda, 0x876f); // Realtek Bluetooth 5.4 Adapter
+    hci_transport_usb_add_device(0x0bda, 0x8771); // Generic Realtek RTL8761BU
+    hci_transport_usb_add_device(0x0bda, 0xb720); // Generic Realtek RTL8723BU
+    hci_transport_usb_add_device(0x0a12, 0x0001); // CSR8510 (TP-Link UB400 & clones)
+    hci_transport_usb_add_device(0x0a5c, 0x21e8); // Broadcom BCM20702
+    hci_transport_usb_add_device(0x0b05, 0x17cb); // ASUS USB-BT400
 
 #ifdef _WIN32
     char dongle_name[128] = "Standard USB Bluetooth Dongle";
@@ -682,14 +720,6 @@ int bt_controller_init_target(const char *device_name, uint16_t vid, uint16_t pi
     btstack_memory_init();
     btstack_run_loop_init(btstack_run_loop_windows_get_instance());
 #else
-    // 1. Register USB VID/PID combinations for libusb transport on macOS / POSIX
-    hci_transport_usb_add_device(0x2357, 0x0604); // TP-Link UB500 (Realtek RTL8761BU)
-    hci_transport_usb_add_device(0x0bda, 0x8771); // Generic Realtek RTL8761BU
-    hci_transport_usb_add_device(0x0bda, 0xb720); // Generic Realtek RTL8723BU
-    hci_transport_usb_add_device(0x0a12, 0x0001); // CSR8510 (TP-Link UB400 & clones)
-    hci_transport_usb_add_device(0x0a5c, 0x21e8); // Broadcom BCM20702
-    hci_transport_usb_add_device(0x0b05, 0x17cb); // ASUS USB-BT400
-
     if (vid != 0 && pid != 0) {
         hci_transport_usb_add_device(vid, pid);
     }
@@ -736,14 +766,11 @@ int bt_controller_init_target(const char *device_name, uint16_t vid, uint16_t pi
     // blobs must be loaded for BR/EDR discoverability. Without that the chip
     // powers on unpatched and the phone cannot see the adapter.
     bt_chip_family_t chip = bt_chip_family_from_vid(detected_vid);
-#ifndef _WIN32
     if (chip == BT_CHIP_UNKNOWN && detected_vid == 0) {
-        // POSIX probe found no known adapter — preserve the previous behaviour and
-        // assume the primary Realtek hardware so a UB500 still comes up even if the
-        // libusb enumeration missed it (e.g. transient permissions).
+        // If probe found no known adapter — assume the primary Realtek hardware
+        // so a Realtek dongle still comes up even if the enumeration missed it.
         chip = BT_CHIP_REALTEK;
     }
-#endif
 
     switch (chip) {
         case BT_CHIP_REALTEK: {
@@ -910,6 +937,10 @@ void bt_controller_stop(void) {
 
 bool bt_controller_is_ready(void) {
     return s_is_ready;
+}
+
+bool bt_controller_is_dongle_present(void) {
+    return s_dongle_detected;
 }
 
 void bt_controller_get_bd_addr(bd_addr_t out_addr) {

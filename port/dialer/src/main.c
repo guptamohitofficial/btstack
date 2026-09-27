@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "diag_logger.h"
 #include "bt/bt_controller.h"
@@ -172,9 +173,9 @@ static void on_hfp_status_changed(const hfp_hf_status_t *status) {
             audio_render_set_volume(1.2f);
         }
         if (status->mic_gain > 0) {
-            audio_capture_set_gain((float)status->mic_gain / 15.0f * 3.0f);
+            audio_capture_set_gain((float)status->mic_gain / 15.0f);
         } else {
-            audio_capture_set_gain(2.5f);
+            audio_capture_set_gain(1.0f); // Unity gain — no synthetic amplification
         }
         diag_log("[AUDIO] Starting audio rendering & capture engines (Codec: %s, Vol: %.1fx, Gain: %.1fx)...",
                  status->negotiated_codec == HFP_CODEC_MSBC ? "mSBC (16kHz)" : "CVSD (8kHz)",
@@ -433,15 +434,30 @@ int main(int argc, const char * argv[]) {
     }
 
     // 3. Initialize Controller, USB HCI Transport & Core Protocols (L2CAP, RFCOMM, SDP)
+    char adapter_name[128];
+    if (ipc_device_name()) {
+        snprintf(adapter_name, sizeof(adapter_name), "%s", ipc_device_name());
+    } else {
+        int dev_num = ipc_device_number();
+        if (dev_num <= 0) {
+            // Assign a random 3-digit number (100-999) if not yet assigned to user
+            srand((unsigned int)time(NULL));
+            dev_num = 100 + (rand() % 900);
+            diag_log("[DIALER] No user device number found. Using random 3-digit fallback: %d", dev_num);
+        }
+
 #ifdef _WIN32
-    const char *adapter_name = "Windows Dialer (UB500)";
+        snprintf(adapter_name, sizeof(adapter_name), "PC Dialer %d", dev_num);
 #elif defined(__APPLE__)
-    const char *adapter_name = "Mac Dialer (UB500)";
+        snprintf(adapter_name, sizeof(adapter_name), "Mac Dialer %d", dev_num);
 #else
-    const char *adapter_name = "Dialer (UB500)";
+        snprintf(adapter_name, sizeof(adapter_name), "Dialer %d", dev_num);
 #endif
+    }
     bt_controller_set_status_callback(&on_adapter_status);
-    if (bt_controller_init(adapter_name, &on_controller_ready) != 0) {
+    uint16_t target_vid = ipc_target_vid();
+    uint16_t target_pid = ipc_target_pid();
+    if (bt_controller_init_target(adapter_name, target_vid, target_pid, 0, 0, NULL, &on_controller_ready) != 0) {
         diag_log("[ERROR] Failed to initialize BT controller");
         diag_logger_close();
         return 1;

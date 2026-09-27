@@ -16,6 +16,9 @@ PnpLockdown = 1
 
 [Standard.NTamd64]
 %DeviceName% = USB_Install, USB\VID_2357&PID_0604
+%DeviceName% = USB_Install, USB\VID_0BDA&PID_A728
+%DeviceName% = USB_Install, USB\VID_0BDA&PID_876F
+%DeviceName% = USB_Install, USB\VID_0A12&PID_0001
 
 [USB_Install]
 Include = winusb.inf

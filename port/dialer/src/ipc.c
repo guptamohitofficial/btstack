@@ -3,6 +3,7 @@
 #include "ipc.h"
 #include "bt/hfp_hf.h"
 #include "bt/bt_controller.h"
+#include "audio/audio_capture.h"
 #include "diag_logger.h"
 
 #include <stdio.h>
@@ -14,6 +15,10 @@
 // ---------------------------------------------------------------------------
 static bool s_ipc_enabled = false;
 static char s_recordings_dir[512] = "";
+static char s_device_name[128] = "";
+static int s_device_number = -1;
+static uint16_t s_target_vid = 0;
+static uint16_t s_target_pid = 0;
 static bool s_next_call_outgoing = false;
 
 bool ipc_parse_args(int argc, const char *argv[]) {
@@ -22,6 +27,14 @@ bool ipc_parse_args(int argc, const char *argv[]) {
             s_ipc_enabled = true;
         } else if (strcmp(argv[i], "--recordings-dir") == 0 && i + 1 < argc) {
             snprintf(s_recordings_dir, sizeof(s_recordings_dir), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--device-name") == 0 && i + 1 < argc) {
+            snprintf(s_device_name, sizeof(s_device_name), "%s", argv[++i]);
+        } else if (strcmp(argv[i], "--device-number") == 0 && i + 1 < argc) {
+            s_device_number = atoi(argv[++i]);
+        } else if (strcmp(argv[i], "--vid") == 0 && i + 1 < argc) {
+            s_target_vid = (uint16_t)strtoul(argv[++i], NULL, 0);
+        } else if (strcmp(argv[i], "--pid") == 0 && i + 1 < argc) {
+            s_target_pid = (uint16_t)strtoul(argv[++i], NULL, 0);
         }
     }
     return s_ipc_enabled;
@@ -29,6 +42,10 @@ bool ipc_parse_args(int argc, const char *argv[]) {
 
 bool ipc_is_enabled(void) { return s_ipc_enabled; }
 const char *ipc_recordings_dir(void) { return s_recordings_dir[0] ? s_recordings_dir : NULL; }
+const char *ipc_device_name(void) { return s_device_name[0] ? s_device_name : NULL; }
+int ipc_device_number(void) { return s_device_number; }
+uint16_t ipc_target_vid(void) { return s_target_vid; }
+uint16_t ipc_target_pid(void) { return s_target_pid; }
 void ipc_set_call_outgoing(bool outgoing) { s_next_call_outgoing = outgoing; }
 
 // ---------------------------------------------------------------------------
@@ -78,6 +95,29 @@ static bool json_get_string(const char *json, const char *key, char *out, size_t
     }
     out[o] = '\0';
     return true;
+}
+
+static bool json_get_bool(const char *json, const char *key, bool *out_val) {
+    if (!json || !key || !out_val) return false;
+    char pattern[64];
+    snprintf(pattern, sizeof(pattern), "\"%s\"", key);
+    const char *p = strstr(json, pattern);
+    if (!p) return false;
+    p += strlen(pattern);
+    while (*p == ' ' || *p == '\t') p++;
+    if (*p != ':') return false;
+    p++;
+    while (*p == ' ' || *p == '\t') p++;
+
+    if (strncmp(p, "true", 4) == 0 || strncmp(p, "\"true\"", 6) == 0 || *p == '1') {
+        *out_val = true;
+        return true;
+    }
+    if (strncmp(p, "false", 5) == 0 || strncmp(p, "\"false\"", 7) == 0 || *p == '0') {
+        *out_val = false;
+        return true;
+    }
+    return false;
 }
 
 // Escape a string into a JSON-safe buffer (for emission).
@@ -161,6 +201,7 @@ static bool s_last_slc = false;
 static bool s_last_audio = false;
 static uint8_t s_last_signal = 0xFF;
 static uint8_t s_last_battery = 0xFF;
+static uint8_t s_last_codec = 0;
 static char s_last_caller[32] = "";
 static char s_last_device_name[64] = "";
 
@@ -174,6 +215,7 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         status->is_audio_connected != s_last_audio ||
         status->signal_strength != s_last_signal ||
         status->battery_level != s_last_battery ||
+        status->negotiated_codec != s_last_codec ||
         strncmp(status->caller_id, s_last_caller, sizeof(s_last_caller)) != 0 ||
         strncmp(status->device_name, s_last_device_name, sizeof(s_last_device_name)) != 0;
     if (!changed) return;
@@ -182,6 +224,7 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
     s_last_audio = status->is_audio_connected;
     s_last_signal = status->signal_strength;
     s_last_battery = status->battery_level;
+    s_last_codec = status->negotiated_codec;
     snprintf(s_last_caller, sizeof(s_last_caller), "%s", status->caller_id);
     snprintf(s_last_device_name, sizeof(s_last_device_name), "%s", status->device_name);
 
@@ -192,6 +235,8 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
 
     const char *conn = conn_state_name(status);
     const char *callStatus = call_status_name(status);
+    const char *codecStr = (status->negotiated_codec == HFP_CODEC_MSBC) ? "mSBC" :
+                           ((status->negotiated_codec == HFP_CODEC_CVSD || status->is_audio_connected) ? "CVSD" : "");
 
     // Build the optional calls[] array.
     char calls[320] = "[]";
@@ -214,14 +259,18 @@ void ipc_emit_state(const hfp_hf_status_t *status) {
         "\"signalBars\":%u,"
         "\"batteryLevel\":%u,"
         "\"scoActive\":%s,"
-        "\"calls\":%s}",
+        "\"codec\":\"%s\","
+        "\"calls\":%s,"
+        "\"usbDonglePresent\":%s}",
         conn,
         addr,
         dname,
         (unsigned)status->signal_strength,
         (unsigned)status->battery_level,
         status->is_audio_connected ? "true" : "false",
-        calls);
+        codecStr,
+        calls,
+        bt_controller_is_dongle_present() ? "true" : "false");
     emit_line(buf);
 }
 
@@ -268,11 +317,16 @@ void ipc_on_recording_started(const char *session_dir, const char *stereo_wav,
     json_escape(rx, erx, sizeof(erx));
     json_escape(tx, etx, sizeof(etx));
 
+    hfp_hf_status_t status;
+    bt_hfp_get_status(&status);
+    char num[64];
+    json_escape(status.caller_id, num, sizeof(num));
+
     char buf[3200];
     snprintf(buf, sizeof(buf),
         "{\"type\":\"call-started\",\"sessionDir\":\"%s\",\"fullPath\":\"%s\","
-        "\"inPath\":\"%s\",\"outPath\":\"%s\",\"isOutgoing\":%s}",
-        esd, esw, erx, etx, s_next_call_outgoing ? "true" : "false");
+        "\"inPath\":\"%s\",\"outPath\":\"%s\",\"isOutgoing\":%s,\"number\":\"%s\"}",
+        esd, esw, erx, etx, s_next_call_outgoing ? "true" : "false", num);
     emit_line(buf);
 }
 
@@ -372,6 +426,15 @@ void ipc_handle_stdin_line(const char *line) {
         if (json_get_string(p, "digit", digit, sizeof(digit)) && digit[0]) {
             diag_log("[IPC] dtmf %c", digit[0]);
             bt_hfp_send_dtmf(digit[0]);
+        }
+    } else if (strcmp(cmd, "mute") == 0) {
+        bool muted = false;
+        if (json_get_bool(p, "muted", &muted)) {
+            diag_log("[IPC] mute -> %s", muted ? "MUTED" : "UNMUTED");
+            audio_capture_set_gain(muted ? 0.0f : 1.0f);
+        } else {
+            diag_log("[IPC] mute (0.0f gain)");
+            audio_capture_set_gain(0.0f);
         }
     } else if (strcmp(cmd, "discover") == 0 || strcmp(cmd, "discover-nearby") == 0) {
         diag_log("[IPC] discover");

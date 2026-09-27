@@ -15,7 +15,7 @@ static AudioQueueRef s_audio_queue = NULL;
 static AudioQueueBufferRef s_buffers[BUFFER_COUNT];
 static bool s_is_running = false;
 static volatile uint32_t s_target_sample_rate = 8000;
-static float s_mic_gain = 2.5f; // Default digital gain boost (2.5x)
+static float s_mic_gain = 1.0f; // Unity gain – no synthetic amplification
 static audio_capture_pcm_callback_t s_capture_cb = NULL;
 
 static float s_resample_phase = 0.0f;
@@ -93,6 +93,18 @@ int audio_capture_init(audio_capture_pcm_callback_t pcm_callback) {
         diag_log("[COREAUDIO_CAPTURE] ERROR: AudioQueueNewInput failed with status %d", (int)status);
         return -1;
     }
+
+    // Pin the input queue to the built-in microphone so that earphone/headset
+    // audio devices are never used as the capture source. This prevents the
+    // earphone driver bleed (the remote party's audio leaking through the
+    // earphone cup to the headset mic) from being captured and echo'd back.
+    // kAudioDeviceBuiltInMicrophoneUID is a macOS constant for the built-in mic.
+    CFStringRef builtInMicUID = CFSTR("BuiltInMicrophoneDevice");
+    AudioQueueSetProperty(s_audio_queue,
+                          kAudioQueueProperty_CurrentDevice,
+                          &builtInMicUID,
+                          sizeof(builtInMicUID));
+    diag_log("[COREAUDIO_CAPTURE] Pinned input to built-in microphone (suppressing headset/earphone mic)");
 
     uint32_t buffer_byte_size = BUFFER_FRAMES * format.mBytesPerFrame;
     for (int i = 0; i < BUFFER_COUNT; i++) {
